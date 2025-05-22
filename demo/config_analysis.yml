@@ -1,0 +1,30 @@
+n_chunks: 2
+
+# Covariates
+covariates_continuous: ["library_size"]
+covariates_discrete: ["glucose_condition", "cell_type::EndoCBH1"]
+
+# Models
+models:
+    quasimod:
+        formula: "cbind(counts_modified,counts_unmodified) ~ glucose_condition + cell_type + library_size"
+        target_variable: "glucose_condition"
+        filter: ""
+        distribution: 'quasibinomial'
+        fill_y_na_value: 0 # empty string or value to fill NA
+        n_null_permutations: 0
+        shrinkage_distribution: 'normal'
+
+
+# Association plot configurations
+plots:
+    sort_column: "p_value"
+    top_n: 10
+    bottom_n: 10
+
+    significance_column: "p_value"
+    significance_threshold: 0.5
+
+
+# Regression settings
+n_threads: 4
