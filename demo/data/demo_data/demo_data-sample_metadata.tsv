@@ -1,0 +1,9 @@
+tube_label	bethesda_id	nisc_id	sequencing_date	sample_id	cell_type	library_size	glucose_condition	sample_type	sequencing_chemistry
+NISC_#1	o_nat_low	BGQ0001	May_09_24	native_L_r1	EndoCBH3	17157569	0	Native	RNA004
+NISC_#2	o_nat_high	BGQ0002	May_09_24	native_H_r1	EndoCBH3	18347449	1	Native	RNA004
+NISC_#9	n_nat_hi_r1	AEG1878	June_14_24	native_H_r2	EndoCBH3	16612629	1	Native	RNA004
+NISC_#10	n_nat_hi_r2	AEG1879	June_14_24	native_H_r3	EndoCBH1	16716089	1	Native	RNA004
+NISC_#12	n_nat_hi_r3	AEG1880	June_14_24	native_H_r4	EndoCBH1	19636940	1	Native	RNA004
+NISC_#13	n_nat_low_r1	AEG1881	June_14_24	native_L_r2	EndoCBH3	16148120	0	Native	RNA004
+NISC_#14	n_nat_low_r2	AEG1882	June_14_24	native_L_r3	EndoCBH1	10303508	0	Native	RNA004
+NISC_#15	n_nat_low_r3	AEG1883	June_14_24	native_L_r4	EndoCBH1	22687284	0	Native	RNA004

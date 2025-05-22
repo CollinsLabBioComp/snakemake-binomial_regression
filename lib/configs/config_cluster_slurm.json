@@ -1,0 +1,35 @@
+{
+    # default settings for job on SLURM cluster
+    "__default__" :
+    {
+        "memory"    : 15, # all jobs default to 15 in Gb
+        "name"      : "snkmk.{rule}.{wildcards}",
+        "output"    : "logs/cluster/{rule}/snkmk.{wildcards}.o",
+        "error"     : "logs/cluster/{rule}/snkmk.{wildcards}.e"
+    },
+
+    "binomial_regression__split":
+    {
+        "memory"     : 40
+    },
+
+    "binomial_regression__run":
+    {
+        "memory"     : 80
+    },
+
+    "binomial_regression__merge_final":
+    {
+        "memory"     : 40
+    },
+
+    "binomial_regression__overview_plots":
+    {
+        "memory"     : 80
+    },
+
+    "binomial_regression__association_plots":
+    {
+        "memory"     : 80
+    }
+}
