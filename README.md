@@ -45,3 +45,12 @@ Working directory structure
 * **Required input files**: in the `data` directory.
 * **Final output data**: in the `results` directory.
 * **Logs of all jobs**: in the `logs` directory.
+
+
+Input
+---------------------------
+
+AnnData .h5 file with the following attributes:
+- Layers contains those specified under left hand side of `formula` configuration. Example: `counts_modified` and `counts_unmodified` in the demo dataset
+- Observation slot (.obs) contains columns specified on right hand side of `formula` configuration. Example: `glucose_condition`, `cell_type`, and `library_size` in the demo dataset
+- X slot contains total counts of the two test layers. Example: `X` contains `counts_modified` + `counts_unmodified` in the demo dataset
