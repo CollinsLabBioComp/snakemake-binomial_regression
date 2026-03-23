@@ -7,6 +7,6 @@ CONDA_BASE=$(conda info --base)
 source ${CONDA_BASE}/etc/profile.d/conda.sh
 conda activate snakemake_binomial_regression
 
-R -e "library(devtools); devtools::install_github('scverse/anndataR')"
+R -e "library(devtools); devtools::install_github('scverse/anndataR@v0.2.0')"
 R -e "library(devtools); devtools::install_version('car', version = '3.1-3', repos = 'http://cran.us.r-project.org')"
 R -e "install.packages('metRology', repos='http://cran.us.r-project.org')"
