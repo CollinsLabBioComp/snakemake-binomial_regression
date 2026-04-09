@@ -18,7 +18,7 @@ cluster = job_properties.get('cluster', {})
 group = cluster.get('group', 'snakemake') # job group
 queue = cluster.get('queue', None) # job queue
 account = cluster.get('account', None) # job account
-time = cluster.get('time', '02:00:00') # time limit
+time = cluster.get('time', '06:00:00') # time limit
 job_name = cluster.get('name', 'snakemake') # job name
 
 # Check threads in cluster config first then get job properties

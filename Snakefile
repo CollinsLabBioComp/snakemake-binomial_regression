@@ -26,6 +26,73 @@ def format_list_params(arg, pval):
 
     return('--{} "{}"'.format(arg, pval))
 
+
+def get_model_option(wildcards, option_name, default=None):
+    return config['models'][wildcards.model].get(option_name, default)
+
+
+################################################################################
+# Optional beta-binomial parameter estimation
+################################################################################
+rule binomial_regression__estimate_parameters__sample_data:
+    """
+    Sample features for beta-binomial parameter estimation
+    """
+    input:
+        adata='data/data.h5ad'
+    output:
+        adata='results/model={model}/estimate_parameters/data.h5'
+    params:
+        n_mods=lambda wildcards: get_model_option(
+            wildcards,
+            'estimate_dist_parameters_n_mods',
+            1000
+        ),
+        script=srcdir('scripts/0011-sample_estimation_anndata.py')
+    shell:
+        '{params.script} '
+        '--anndata_file {input.adata} '
+        '--n_mods_sample {params.n_mods} '
+        '--anndata_compression_opts 5 '
+        '--output_file {output.adata}'
+
+
+rule binomial_regression__estimate_parameters:
+    """
+    Estimate beta-binomial parameters from sampled data
+    """
+    input:
+        adata='results/model={model}/estimate_parameters/data.h5'
+    output:
+        mu='results/model={model}/estimated_mu_parameter.txt',
+        sigma='results/model={model}/estimated_sigma_parameter.txt'
+    params:
+        formula=lambda wildcards: config['models'][wildcards.model]['formula'],
+        filt=lambda wildcards: format_list_params(
+            'filter',
+            config['models'][wildcards.model]['filter']
+        ),
+        na_fill=lambda wildcards: format_list_params(
+            'fill_y_na_value',
+            config['models'][wildcards.model]['fill_y_na_value']
+        ),
+        in_samp=lambda wildcards: (
+            '--per_sample'
+            if get_model_option(wildcards, 'estimate_dist_parameters_per_sample', False)
+            else ''
+        ),
+        script=srcdir('scripts/0012-estimate_betabinomial_parameters.R')
+    shell:
+        '{params.script} '
+        '--anndata_file {input.adata} '
+        '--formula "{params.formula}" '
+        '{params.filt} '
+        '{params.na_fill} '
+        '{params.in_samp} '
+        '--verbose '
+        '--output_mu_file {output.mu} '
+        '--output_sigma_file {output.sigma}'
+
 ################################################################################
 rule all:
     input:
@@ -73,6 +140,31 @@ def get_regression_input(wildcards):
     )
 
     dist = config['models'][wildcards.model]['distribution']
+    estimate = get_model_option(wildcards, 'estimate_dist_parameters', False)
+    if (dist == 'betabinomial') and estimate:
+        in_dict['mu'] = 'results/model={}/estimated_mu_parameter.txt'.format(
+            wildcards.model
+        )
+        in_dict['sigma'] = 'results/model={}/estimated_sigma_parameter.txt'.format(
+            wildcards.model
+        )
+    return(in_dict)
+
+
+def get_association_plot_input(wildcards):
+    in_dict = {
+        'adata': 'data/data.h5ad',
+        'rez': 'results/binomial_regression-results.tsv.gz'
+    }
+    dist = config['models'][wildcards.model]['distribution']
+    estimate = get_model_option(wildcards, 'estimate_dist_parameters', False)
+    if (dist == 'betabinomial') and estimate:
+        in_dict['mu'] = 'results/model={}/estimated_mu_parameter.txt'.format(
+            wildcards.model
+        )
+        in_dict['sigma'] = 'results/model={}/estimated_sigma_parameter.txt'.format(
+            wildcards.model
+        )
     return(in_dict)
     
 rule binomial_regression__run:
@@ -93,22 +185,30 @@ rule binomial_regression__run:
         dist = lambda wildcards: config['models'][wildcards.model]['distribution'],
         n_perms = lambda wildcards: config['models'][wildcards.model]['n_null_permutations'],
         na_fill = lambda wildcards: format_list_params('fill_y_na_value', config['models'][wildcards.model]['fill_y_na_value']),
-        script = srcdir('scripts/0024-binomial_regression.R')
+        mu = lambda wildcards, input: '--betabinomial_estimated_mu "{}"'.format(input.mu) if 'mu' in input.keys() else '',
+        sigma = lambda wildcards, input: '--betabinomial_fixed_sigma "{}"'.format(input.sigma) if 'sigma' in input.keys() else '',
+        script = srcdir('scripts/0025-binomial_regression.R')
     shell:
-        '{params.script} '
-        '--anndata_file {input.adata} '
-        '--formula "{params.formula}" '
-        '--model_id "{wildcards.model}" '
-        '--target_variable "{params.targ_var}" ' 
-        '--distribution "{params.dist}" '
-        '--n_permutations {params.n_perms} '
-        '{params.cont_covs} '
-        '{params.disc_covs} '
-        '{params.filt} '
-        '{params.na_fill} '
-        '--threads {threads} '
-        '--verbose '
-        '--output_file {output}'
+        r'''
+        echo "Launching {wildcards.model} chunk {wildcards.j_cur}/{wildcards.j_total}"
+        set -euo pipefail
+        {params.script} \
+            --anndata_file {input.adata} \
+            --formula "{params.formula}" \
+            --model_id "{wildcards.model}" \
+            --target_variable "{params.targ_var}" \
+            --distribution "{params.dist}" \
+            --n_permutations {params.n_perms} \
+            {params.cont_covs} \
+            {params.disc_covs} \
+            {params.filt} \
+            {params.na_fill} \
+            {params.mu} \
+            {params.sigma} \
+            --threads {threads} \
+            --verbose \
+            --output_file {output}
+        '''
 
 rule binomial_regression__concat:
     """
@@ -214,8 +314,7 @@ rule binomial_regression__association_plots:
     Generate specific association plots
     """
     input:
-        adata = 'data/data.h5ad',
-        rez = 'results/binomial_regression-results.tsv.gz'
+        unpack(get_association_plot_input)
     output:
         flag = 'results/plots/model={model}/plots.done'
     params:
@@ -232,6 +331,8 @@ rule binomial_regression__association_plots:
         disc_covs = format_list_params('factor_covariates', config['covariates_discrete']),
         dist = lambda wildcards: config['models'][wildcards.model]['distribution'],
         filt = lambda wildcards: format_list_params('filter', config['models'][wildcards.model]['filter']),
+        mu = lambda wildcards, input: '--betabinomial_estimated_mu "{}"'.format(input.mu) if 'mu' in input.keys() else '',
+        sigma = lambda wildcards, input: '--betabinomial_fixed_sigma "{}"'.format(input.sigma) if 'sigma' in input.keys() else '',
         script = srcdir('scripts/0029-plot_associations.R')
     shell:
         '{params.script} '
@@ -248,6 +349,8 @@ rule binomial_regression__association_plots:
         '{params.cont_covs} '
         '{params.disc_covs} '
         '{params.filt} '
+        '{params.mu} '
+        '{params.sigma} '
         '--out_base {params.out_base}; '
         'touch {output.flag}'
         

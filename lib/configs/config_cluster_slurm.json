@@ -15,7 +15,8 @@
 
     "binomial_regression__run":
     {
-        "memory"     : 80
+        "memory"     : 80,
+        "time"       : "72:00:00"
     },
 
     "binomial_regression__merge_final":

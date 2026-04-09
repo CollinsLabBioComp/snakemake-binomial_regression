@@ -13,6 +13,9 @@ models:
         distribution: 'binomial'
         fill_y_na_value: 0 # empty string or value to fill NA
         n_null_permutations: 0
+        estimate_dist_parameters: false
+        estimate_dist_parameters_n_mods: 1000
+        estimate_dist_parameters_per_sample: false
         shrinkage_distribution: 'normal'
 
 

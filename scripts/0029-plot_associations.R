@@ -16,36 +16,123 @@ set.seed(0)
 #'
 #' @export
 regress <- function(df, p) {
-    dist_family <- binomial
-    if (p[["distribution"]] == 'quasibinomial') {
-        dist_family <- quasibinomial
-    }
-    
-    if (!grepl("|", p[["formula"]], fixed = T)) {
-        model <- glm(
-            p[["formula"]],
-            family = dist_family,
-            data = df,
-            control = list(
-                #epsilon = 1e-10,
-                maxit = 1e5
+    if (p[["distribution"]] == "betabinomial-glmmTMB") {
+        if (!requireNamespace("glmmTMB", quietly = TRUE)) {
+            stop("Package 'glmmTMB' is required for distribution=betabinomial-glmmTMB.")
+        }
+        if (!grepl("|", p[["formula"]], fixed = TRUE)) {
+            model <- glmmTMB::glmmTMB(
+                as.formula(p[["formula"]]),
+                family = glmmTMB::betabinomial(link = "logit"),
+                data = df,
+                REML = FALSE,
+                control = glmmTMB::glmmTMBControl(
+                    optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+                ),
+                verbose = FALSE
             )
-        )
+        } else {
+            model <- glmmTMB::glmmTMB(
+                as.formula(p[["formula"]]),
+                family = glmmTMB::betabinomial(link = "logit"),
+                data = df,
+                REML = TRUE,
+                control = glmmTMB::glmmTMBControl(
+                    optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+                ),
+                verbose = FALSE
+            )
+        }
+    } else if (p[["distribution"]] == "betabinomial") {
+        if (!requireNamespace("gamlss.dist", quietly = TRUE)) {
+            stop("Package 'gamlss.dist' is required for distribution=betabinomial.")
+        }
+        if (!grepl("|", p[["formula"]], fixed = TRUE)) {
+            if (has_betabinomial_fixed_params(p)) {
+                if (length(p[["betabinomial_estimated_mu"]]) > 1) {
+                    if (is.null(rownames(df))) {
+                        stop("Per-sample beta-binomial parameters require row names on the model dataframe.")
+                    }
+                    mu <- unname(p[["betabinomial_estimated_mu"]][rownames(df)])
+                    sigma <- unname(p[["betabinomial_fixed_sigma"]][rownames(df)])
+                    if (any(is.na(mu)) || any(is.na(sigma))) {
+                        stop("Missing per-sample beta-binomial parameters for one or more samples.")
+                    }
+                } else {
+                    mu <- unname(p[["betabinomial_estimated_mu"]])
+                    sigma <- unname(p[["betabinomial_fixed_sigma"]])
+                }
+
+                model <- gamlss::gamlss(
+                    as.formula(p[["formula"]]),
+                    family = gamlss.dist::BB,
+                    mu.start = mu,
+                    sigma.start = sigma,
+                    sigma.fix = TRUE,
+                    data = df,
+                    control = gamlss::gamlss.control(
+                        n.cyc = 1e5,
+                        trace = FALSE
+                    )
+                )
+            } else {
+                model <- gamlss::gamlss(
+                    as.formula(p[["formula"]]),
+                    family = gamlss.dist::BB,
+                    data = df,
+                    control = gamlss::gamlss.control(
+                        n.cyc = 1e5,
+                        trace = FALSE
+                    )
+                )
+            }
+        } else {
+            stop("betabinomial with random effect not supported; use distribution=betabinomial-glmmTMB.")
+        }
     } else {
-        # LME4 does not support quasibinomial
-        # https://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#fitting-models-with-overdispersion
-        model <- lme4::glmer(
-            p[["formula"]],
-            family = dist_family,
-            data = df,
-            verbose = FALSE,
-            control = lme4::glmerControl(
-                #tolPwrss = 1e-10,
-                optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+        dist_family <- binomial
+        if (p[["distribution"]] == 'quasibinomial') {
+            dist_family <- quasibinomial
+        }
+
+        if (!grepl("|", p[["formula"]], fixed = T)) {
+            model <- glm(
+                p[["formula"]],
+                family = dist_family,
+                data = df,
+                control = list(
+                    maxit = 1e5
+                )
             )
-        )
+        } else {
+            model <- lme4::glmer(
+                p[["formula"]],
+                family = dist_family,
+                data = df,
+                verbose = FALSE,
+                control = lme4::glmerControl(
+                    optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+                )
+            )
+        }
     }
     return(model)
+}
+
+load_named_numeric_file <- function(path) {
+    tmp <- read.csv(path, sep = "\t", header = FALSE)
+    if (ncol(tmp) < 2) {
+        stop("Expected two-column parameter file: ", path)
+    }
+    values <- tmp[[2]]
+    names(values) <- tmp[[1]]
+    return(values)
+}
+
+has_betabinomial_fixed_params <- function(p) {
+    mu <- p[["betabinomial_estimated_mu"]]
+    sigma <- p[["betabinomial_fixed_sigma"]]
+    return((!all(is.na(mu))) && (!all(is.na(sigma))))
 }
 
 ##################### Read Command Line Parameters #############################
@@ -163,8 +250,28 @@ optionList <- list(
         default = 'binomial',
         help = paste0(
             "Distribution to use to model data. Should be one of:",
-            "`binomial` or `quasibinomial`",
+            "`binomial`, `quasibinomial`, `betabinomial`, or `betabinomial-glmmTMB`",
             " [default %default]"
+        )
+    ),
+
+    optparse::make_option(c("--betabinomial_estimated_mu"),
+        type = "character",
+        default = NA,
+        help = paste0(
+          "Two-column file of estimated beta-binomial mu values.",
+          " If one value, assumes global. If more than 1, assumes per-sample.",
+          " [default %default]"
+        )
+    ),
+
+    optparse::make_option(c("--betabinomial_fixed_sigma"),
+        type = "character",
+        default = NA,
+        help = paste0(
+          "Two-column file of fixed beta-binomial sigma values.",
+          " If one value, assumes global. If more than 1, assumes per-sample.",
+          " [default %default]"
         )
     ),
 
@@ -209,6 +316,11 @@ getOptionStrings <- function(parserObj) {
 
 optStrings <- getOptionStrings(parser)
 arguments <- optparse::parse_args(parser, positional_arguments = TRUE)
+for (i in c("betabinomial_estimated_mu", "betabinomial_fixed_sigma")) {
+    if (!is.na(arguments$options[[i]])) {
+        arguments$options[[i]] <- load_named_numeric_file(arguments$options[[i]])
+    }
+}
 ################################################################################
 
 ######################## Required Packages #####################################
@@ -217,6 +329,8 @@ suppressPackageStartupMessages(library(tidyr))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(scales))
 suppressPackageStartupMessages(library(anndataR))
+suppressPackageStartupMessages(library(lme4))
+suppressPackageStartupMessages(library(gamlss))
 ################################################################################
 
 ################################ Functions #####################################
@@ -254,7 +368,8 @@ format_dataframe <- function(
     factor_covs,
     cont_covs,
     params = list(),
-    lib_size_normalize = F
+    lib_size_normalize = F,
+    fit_model = FALSE
 ) {
     filt_row <- row.names(h5$var) == feature_id
     
@@ -276,6 +391,7 @@ format_dataframe <- function(
         dplyr::filter(!is.na(counts_unmodified)) %>%
         dplyr::filter(!is.na(counts_modified)) %>%
         as.data.frame(.)
+    row.names(df) <- df$sample_id
 
     # Also process covariates for ease of plotting
     for (f in factor_covs) {
@@ -299,14 +415,24 @@ format_dataframe <- function(
     }
     
     df$residuals <- NA
-    if (length(params) > 0) {
+    if ((length(params) > 0) && fit_model) {
+        model_vars <- unique(all.vars(stats::as.formula(params[["formula"]])))
+        df_model <- as.data.frame(df[, model_vars, drop = FALSE])
+        for (nm in names(df_model)) {
+            if (is.numeric(df_model[[nm]])) {
+                df_model[[nm]][is.nan(df_model[[nm]])] <- NA_real_
+            }
+        }
+        model_rows <- stats::complete.cases(df_model)
+        df_model <- df[model_rows, , drop = FALSE]
+        row.names(df_model) <- df_model$sample_id
         model <- tryCatch({
-            regress(df, params)
+            regress(df_model, params)
         }, error = function(e) {
             NULL  # If the model fails, return NULL
         })
         if (!is.null(model)) {
-            df$residuals <- residuals(model)
+            df[df_model$sample_id, "residuals"] <- as.numeric(residuals(model))
         }
     }
    
@@ -376,6 +502,52 @@ plot_association__continuous <- function(
           axis.text.y=element_text(size=35),
           axis.text.x=element_text(size=35),
           axis.title.x=element_text(size=40),
+          panel.grid.minor = element_blank()
+      )
+  return(plot)
+}
+
+plot_association__continuous_residuals <- function(
+    df,
+    x_col,
+    base_theme,
+    y_label
+) {
+    df$x <- df[[x_col]]
+    df <- df %>%
+      dplyr::group_by(sample_id, x, residuals, total_counts) %>%
+      unique(.)
+
+    plot <- ggplot2::ggplot(df, ggplot2::aes(
+          x = x,
+          y = residuals,
+          size = total_counts
+      )) +
+      ggplot2::geom_point(size = 5, alpha = 0.75) +
+      ggplot2::theme_bw(base_size = base_theme) +
+      ggplot2::labs(
+          x = x_col,
+          y = "Residuals"
+      ) +
+      ggplot2::geom_smooth(method = "lm", se = TRUE, color = "blue", size = 1.5) +
+      ggplot2::theme(
+          title = element_blank(),
+          legend.position = 'bottom',
+          legend.direction = 'horizontal',
+          legend.box = 'horizontal',
+          legend.box.margin = margin(t = -30, r = 15, b = 0, l = 0),
+          legend.margin = margin(t = -20, r = 0, b = 0, l = 0),
+          legend.title = element_text(
+            margin = margin(t = 0, r = 0, b = 10, l = 0),
+            size = 35
+          ),
+          legend.text = element_text(size = 30),
+          legend.spacing.y = unit(0, 'cm'),
+          plot.background = element_blank(),
+          axis.title.y = element_text(size = 40),
+          axis.text.y = element_text(size = 35),
+          axis.text.x = element_text(size = 35),
+          axis.title.x = element_text(size = 40),
           panel.grid.minor = element_blank()
       )
   return(plot)
@@ -575,12 +747,21 @@ plot_association <- function(
     residuals = FALSE
 ) {
     if (is.numeric(df[[target_col]])) {
-        plt <- plot_association__continuous(
-            df,
-            target_col,
-            base_theme, 
-            y_label 
-        )
+        if (residuals) {
+            plt <- plot_association__continuous_residuals(
+                df,
+                target_col,
+                base_theme,
+                y_label
+            )
+        } else {
+            plt <- plot_association__continuous(
+                df,
+                target_col,
+                base_theme, 
+                y_label 
+            )
+        }
     } else {
         if (ratio) {
             plt <- plot_association__discrete_ratio(
@@ -676,21 +857,24 @@ if (nrow(top_rez) != 0) {
         }
         params <- list(
             formula = deparse(new_formula),
-            distribution = arguments$options$distribution
+            distribution = arguments$options$distribution,
+            betabinomial_estimated_mu = arguments$options$betabinomial_estimated_mu,
+            betabinomial_fixed_sigma = arguments$options$betabinomial_fixed_sigma
         )
 
         # First raw data
         feat_title <- sprintf('%s - raw data', feat)
-        df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params)
+        df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, fit_model = FALSE)
         print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts", ratio = F))
         print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts", ratio = T))
         # Now normalize data
         feat_title <- sprintf('%s - normalized data', feat)
-        df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, lib_size_normalize = T)
+        df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, lib_size_normalize = T, fit_model = FALSE)
         print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts (normalized)", ratio = F))
         print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts (normalized)", ratio = T))
         # Now residuals
         feat_title <- sprintf('%s - model residuals', feat)
+        df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, fit_model = TRUE)
         print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Residuals", ratio = F, residuals = T))
 
     }
@@ -727,21 +911,24 @@ for (feat in null_ids) {
     }
     params <- list(
         formula = deparse(new_formula),
-        distribution = arguments$options$distribution
+        distribution = arguments$options$distribution,
+        betabinomial_estimated_mu = arguments$options$betabinomial_estimated_mu,
+        betabinomial_fixed_sigma = arguments$options$betabinomial_fixed_sigma
     )
 
     # First raw data
     feat_title <- sprintf('%s - raw data', feat)
-    df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params)
+    df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, fit_model = FALSE)
     print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts", ratio = F))
     print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts", ratio = T))
     # Now normalize data
     feat_title <- sprintf('%s - normalized data', feat)
-    df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, lib_size_normalize = T)
+    df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, lib_size_normalize = T, fit_model = FALSE)
     print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts (normalized)", ratio = F))
     print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Counts (normalized)", ratio = T))
     # Now residuals
     feat_title <- sprintf('%s - model residuals', feat)
+    df_plt <- format_dataframe(adata, feat, factor_covs, cont_covs, params, fit_model = TRUE)
     print(plot_association(df_plt, targ_var, feat_title, theme_size, y_label = "Residuals", ratio = F, residuals = T))
 
 }

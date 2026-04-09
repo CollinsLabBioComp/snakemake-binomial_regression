@@ -80,20 +80,46 @@ cooksd <- function(model, data, param) {
   num_coefficients <- length(coefficients) + 1
   num_observations <- nrow(data)
   resids <- residuals(model, type = "weighted")
-  # Evaluate the residual mean square estimate of the variance using 
-  # Formula 2.12 in Robust Diagnostic Regression Analysis.
   s2 <- sum(resids^2)/(num_observations - num_coefficients)
   d <- vector(mode = "double", length = num_observations)
 
   for (i in seq_along(d)) {
-    # Create the leave-one-out (loo) dataframe.
     loo_data <- dplyr::filter(data, !dplyr::row_number() %in% i)
     loo_m <- regress(loo_data, param)
     loo_p <- exp(predict(loo_m, newdata=data, data=loo_data, what=c("mu")))
-    # Evaluate Cook's Distance using Formula 2.41 in Robust Diagnostic Regression Analysis.
     d[i] <- sum((loo_p - pred)^2) / (num_coefficients*s2)
   }
   return(d)
+}
+
+extract_coef_table <- function(model, distribution) {
+    if (distribution == "betabinomial-glmmTMB") {
+        return(summary(model)$coefficients$cond)
+    } else if (distribution == "betabinomial") {
+        model$parameters <- "mu"
+        invisible(capture.output({
+            coef_table <- as.matrix(summary(model))
+        }))
+        return(coef_table)
+    } else {
+        return(summary(model)$coefficients)
+    }
+}
+
+load_named_numeric_file <- function(path) {
+    tmp <- read.csv(path, sep = "\t", header = FALSE)
+    if (ncol(tmp) < 2) {
+        stop("Expected two-column parameter file: ", path)
+    }
+    values <- tmp[[2]]
+    names(values) <- tmp[[1]]
+    return(values)
+}
+
+has_betabinomial_fixed_params <- function(p) {
+    mu <- p[["betabinomial_estimated_mu"]]
+    sigma <- p[["betabinomial_fixed_sigma"]]
+    return((!all(is.na(mu))) && (!all(is.na(sigma))))
 }
 
 empirical_distribution <- function(
@@ -170,7 +196,7 @@ run_permutations <- function(
 
         if (!is.null(permuted_model)) {
             # Extract p-value for the target variable
-            coef_table <- summary(permuted_model)$coefficients
+            coef_table <- extract_coef_table(permuted_model, param[["distribution"]])
             target_row <- grep(
                 pattern = param[["target_variable"]],
                 x = rownames(coef_table),
@@ -275,34 +301,105 @@ run_permutations <- function(
 #'
 #' @export
 regress <- function(df, p) {
-    dist_family <- binomial
-    if (p[["distribution"]] == 'quasibinomial') {
-        dist_family <- quasibinomial
-    }
-    
-    if (!grepl("|", p[["formula"]], fixed = T)) {
-        model <- glm(
-            p[["formula"]],
-            family = dist_family,
-            data = df,
-            control = list(
-                #epsilon = 1e-10,
-                maxit = 1e5
+    if (p[["distribution"]] == "betabinomial-glmmTMB") {
+        if (!requireNamespace("glmmTMB", quietly = TRUE)) {
+            stop("Package 'glmmTMB' is required for distribution=betabinomial-glmmTMB.")
+        }
+        if (!grepl("|", p[["formula"]], fixed = TRUE)) {
+            model <- glmmTMB::glmmTMB(
+                as.formula(p[["formula"]]),
+                family = glmmTMB::betabinomial(link = "logit"),
+                data = df,
+                REML = FALSE,
+                control = glmmTMB::glmmTMBControl(
+                    optCtrl = list(iter.max = 1e3, eval.max = 1e5)
+                ),
+                verbose = FALSE
             )
-        )
+        } else {
+            model <- glmmTMB::glmmTMB(
+                as.formula(p[["formula"]]),
+                family = glmmTMB::betabinomial(link = "logit"),
+                data = df,
+                REML = TRUE,
+                control = glmmTMB::glmmTMBControl(
+                    optCtrl = list(iter.max = 1e3, eval.max = 1e5)
+                ),
+                verbose = FALSE
+            )
+        }
+    } else if (p[["distribution"]] == "betabinomial") {
+        if (!requireNamespace("gamlss.dist", quietly = TRUE)) {
+            stop("Package 'gamlss.dist' is required for distribution=betabinomial.")
+        }
+        if (!grepl("|", p[["formula"]], fixed = TRUE)) {
+            if (has_betabinomial_fixed_params(p)) {
+                if (length(p[["betabinomial_estimated_mu"]]) > 1) {
+                    if (is.null(rownames(df))) {
+                        stop("Per-sample beta-binomial parameters require row names on the model dataframe.")
+                    }
+                    mu <- unname(p[["betabinomial_estimated_mu"]][rownames(df)])
+                    sigma <- unname(p[["betabinomial_fixed_sigma"]][rownames(df)])
+                    if (any(is.na(mu)) || any(is.na(sigma))) {
+                        stop("Missing per-sample beta-binomial parameters for one or more samples.")
+                    }
+                } else {
+                    mu <- unname(p[["betabinomial_estimated_mu"]])
+                    sigma <- unname(p[["betabinomial_fixed_sigma"]])
+                }
+
+                model <- gamlss::gamlss(
+                    as.formula(p[["formula"]]),
+                    family = gamlss.dist::BB,
+                    mu.start = mu,
+                    sigma.start = sigma,
+                    sigma.fix = TRUE,
+                    data = df,
+                    control = gamlss::gamlss.control(
+                        n.cyc = 1e5,
+                        trace = FALSE
+                    )
+                )
+            } else {
+                model <- gamlss::gamlss(
+                    as.formula(p[["formula"]]),
+                    family = gamlss.dist::BB,
+                    data = df,
+                    control = gamlss::gamlss.control(
+                        n.cyc = 1e5,
+                        trace = FALSE
+                    )
+                )
+            }
+        } else {
+            stop("betabinomial with random effect not supported; use distribution=betabinomial-glmmTMB.")
+        }
     } else {
-        # LME4 does not support quasibinomial
-        # https://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#fitting-models-with-overdispersion
-        model <- lme4::glmer(
-            p[["formula"]],
-            family = dist_family,
-            data = df,
-            verbose = FALSE,
-            control = lme4::glmerControl(
-                #tolPwrss = 1e-10,
-                optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+        dist_family <- binomial
+        if (p[["distribution"]] == "quasibinomial") {
+            dist_family <- quasibinomial
+        }
+
+        if (!grepl("|", p[["formula"]], fixed = TRUE)) {
+            model <- glm(
+                p[["formula"]],
+                family = dist_family,
+                data = df,
+                control = list(
+                    maxit = 1e5
+                )
             )
-        )
+        } else {
+            model <- lme4::glmer(
+                p[["formula"]],
+                family = dist_family,
+                data = df,
+                verbose = FALSE,
+                control = lme4::glmerControl(
+                    optCtrl = list(iter.max = 1e5, eval.max = 1e5)
+                )
+            )
+        }
     }
     return(model)
 }
@@ -406,7 +503,7 @@ command_line_interface <- function() {
             default = 'binomial',
             help = paste0(
               "Distribution to use to model data. Should be one of:",
-              "`binomial` or `quasibinomial`",
+              "`binomial`, `quasibinomial`, `betabinomial`, or `betabinomial-glmmTMB`",
               " [default %default]"
             )
         ),
@@ -444,6 +541,26 @@ command_line_interface <- function() {
             default = NA,
             help = paste0(
                 "Value to fill NAs in y variable with. If parameter set to NA does nothing.",
+                " [default %default]"
+            )
+        ),
+
+        optparse::make_option(c("--betabinomial_estimated_mu"),
+            type = "character",
+            default = NA,
+            help = paste0(
+                "Two-column file of estimated beta-binomial mu values.",
+                " If one value, assumes global. If more than 1, assumes per-sample.",
+                " [default %default]"
+            )
+        ),
+
+        optparse::make_option(c("--betabinomial_fixed_sigma"),
+            type = "character",
+            default = NA,
+            help = paste0(
+                "Two-column file of fixed beta-binomial sigma values.",
+                " If one value, assumes global. If more than 1, assumes per-sample.",
                 " [default %default]"
             )
         ),
@@ -488,13 +605,23 @@ command_line_interface <- function() {
     for (i in c("factor_covariates", "continuous_covariates")) {
         param[[i]] <- strsplit(param[[i]], split = ",")[[1]]
     }
+    for (i in c("betabinomial_estimated_mu", "betabinomial_fixed_sigma")) {
+        if (is.na(param[[i]])) {
+            next()
+        }
+        param[[i]] <- load_named_numeric_file(param[[i]])
+    }
 
     # Add in the test statistic column based on the regression model
     # NOTE: this is the output in coef_table
-    if (param[["distribution"]] == 'binomial') {
+    if (param[["distribution"]] == "binomial") {
         param[["test_statistic"]] <- "z value"
-    } else if (param[["distribution"]] == 'quasibinomial') {
+    } else if (param[["distribution"]] == "quasibinomial") {
         param[["test_statistic"]] <- "t value"
+    } else if (param[["distribution"]] == "betabinomial") {
+        param[["test_statistic"]] <- "t value"
+    } else if (param[["distribution"]] == "betabinomial-glmmTMB") {
+        param[["test_statistic"]] <- "z value"
     } else {
         stop("ERROR: Invalid distribution.")
     }
@@ -743,26 +870,44 @@ run_analysis <- function(
             }
         }
 
+        # Keep only variables used in the model
+        model_vars <- all.vars(stats::as.formula(param[["formula"]]))
+        df_model <- as.data.frame(df_reg[, model_vars, drop = FALSE])
+
+        # Turn NaN into NA so complete.cases catches them
+        for (nm in names(df_model)) {
+            if (is.numeric(df_model[[nm]])) {
+                df_model[[nm]][is.nan(df_model[[nm]])] <- NA_real_
+            }
+        }
+
+        # Drop rows with any missing values in model variables
+        df_model <- df_model[stats::complete.cases(df_model), , drop = FALSE]
+
+        # Recompute n and target-variable check after complete-case filtering
+        df_return$n <- nrow(df_model)
+        target_variable_pass <- length(unique(df_model[[param[["target_variable"]]]])) > 1
+
         # Fit the model
         model <- NULL
         if (df_return$n > 3 & target_variable_pass) {
-            model <- tryCatch({
-                model <- regress(df_reg, param)
-                model
-            }, warning = function(w) {
-                df_return$model_message <<- w$message[[1]]
-                if (grepl("algorithm did not converge", w$message)) {
-                    message("Warning: Model did not converge.")
-                    NULL  # Return NULL or a different value if needed
+            model <- tryCatch(
+                withCallingHandlers(
+                    regress(df_model, param),
+                    warning = function(w) {
+                        msg <- conditionMessage(w)
+                        df_return$model_message <<- msg
+                        message("Warning fitting ", rownames(var_row), ": ", msg)
+                        invokeRestart("muffleWarning")
+                    }
+                ),
+                error = function(e) {
+                    msg <- conditionMessage(e)
+                    df_return$model_message <<- msg
+                    message("Error fitting ", rownames(var_row), ": ", msg)
+                    NULL
                 }
-                #stop("Warning: when fitting model: ", w$message, "\n")
-                model # Return the model
-            }, error = function(e) {
-                df_return$model_message <<- e$message[[1]]
-                # If an error occurs, handle it here
-                message("Error: when fitting model: ", e$message, "\n")
-                NULL  # Return NULL or any other appropriate value
-            })
+            )
         } else {
             if (df_return$n <= 3) {
                 df_return$model_message <- "Model not fit: n<=3."
@@ -794,7 +939,28 @@ run_analysis <- function(
             df_return[[c]] <- NA
         }
         if (!is.null(model)) {
-            coef_table <- summary(model)$coefficients
+            coef_table <- tryCatch(
+                withCallingHandlers(
+                    extract_coef_table(model, param[["distribution"]]),
+                    warning = function(w) {
+                        msg <- conditionMessage(w)
+                        df_return$model_message <<- paste("summary warning:", msg)
+                        message("Summary warning for ", rownames(var_row), ": ", msg)
+                        invokeRestart("muffleWarning")
+                    }
+                ),
+                error = function(e) {
+                    msg <- conditionMessage(e)
+                    df_return$model_message <<- paste("summary error:", msg)
+                    message("Summary error for ", rownames(var_row), ": ", msg)
+                    NULL
+                }
+            )
+
+            if (is.null(coef_table)) {
+                return(df_return)
+            }
+            
             target_row <- grep(
                 pattern = param[["target_variable"]],
                 x = rownames(coef_table),
@@ -845,7 +1011,15 @@ run_analysis <- function(
                     )
                 }
             
-                df_return[["dispersion"]] <- sum(residuals(model, type = "pearson")^2) / df.residual(model)
+                if (param[["distribution"]] == "betabinomial") {
+                    df_return[["dispersion"]] <- sum(
+                        residuals(model, type = "weighted")^2
+                    ) / df.residual(model)
+                } else {
+                    df_return[["dispersion"]] <- sum(
+                        residuals(model, type = "pearson")^2
+                    ) / df.residual(model)
+                }
                 
                 # Add overdispersion check
                 # dispersion_test <- tryCatch({
@@ -877,7 +1051,7 @@ run_analysis <- function(
                 if (!is.na(df_return[["p_value"]])) {
                     if (param[["n_permutations"]] > 0) {
                         tmp_list <- run_permutations(
-                            df_reg, 
+                            df_model, 
                             param, 
                             df_return, 
                             n_permutations = param[["n_permutations"]],
